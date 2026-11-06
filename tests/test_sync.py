@@ -1,4 +1,7 @@
 import importlib.util
+import contextlib
+import io
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -70,12 +73,106 @@ class SynchronizationTest(unittest.TestCase):
         self.assertEqual((self.one / "remote.txt").read_text(), "remote")
 
     def test_remote_and_dirty_stops_without_modifying_local(self):
-        self.remote_change()
+        (self.two / "file.txt").write_text("remote work")
+        command(self.two, "add", "file.txt")
+        command(self.two, "commit", "-m", "remote change")
+        command(self.two, "push", "origin", "main")
         (self.one / "file.txt").write_text("unsent work")
         with self.assertRaises(sync.SyncError):
             sync.initialize(self.env, False)
         self.assertEqual((self.one / "file.txt").read_text(), "unsent work")
         self.assertFalse((self.one / "remote.txt").exists())
+
+    def test_fast_forward_preserves_dirty_file_not_changed_remotely(self):
+        self.remote_change()
+        (self.one / "file.txt").write_text("unsent work")
+        sync.initialize(self.env, False)
+        self.assertEqual((self.one / "file.txt").read_text(), "unsent work")
+        self.assertEqual((self.one / "remote.txt").read_text(), "remote")
+
+    def test_output_only_notebook_changes_are_not_committed_or_deleted(self):
+        notebook = self.one / "notebook.ipynb"
+        base = {"nbformat": 4, "nbformat_minor": 5, "metadata": {}, "cells": [
+            {"cell_type": "code", "source": ["print(1)"], "metadata": {},
+             "execution_count": None, "outputs": []}]}
+        notebook.write_text(json.dumps(base))
+        command(self.one, "add", "notebook.ipynb")
+        command(self.one, "commit", "-m", "notebook")
+        command(self.one, "push", "origin", "main")
+        base["cells"][0]["execution_count"] = 1
+        base["cells"][0]["outputs"] = [{"output_type": "stream", "name": "stdout", "text": ["1\\n"]}]
+        notebook.write_text(json.dumps(base))
+        (self.one / "file.txt").write_text("code in another file")
+        before = notebook.read_bytes()
+        sync.sync_once(self.env, False)
+        self.assertEqual(notebook.read_bytes(), before)
+        self.assertIn("notebook.ipynb", command(self.one, "status", "--porcelain"))
+        self.assertEqual(command(self.one, "diff", "--name-only", "HEAD~1", "HEAD"), "file.txt")
+        head = command(self.one, "rev-parse", "HEAD")
+        sync.sync_once(self.env, False)
+        self.assertEqual(command(self.one, "rev-parse", "HEAD"), head)
+
+    def test_notebook_code_changes_and_outputs_are_published_together(self):
+        notebook = self.one / "notebook.ipynb"
+        nb = {"nbformat": 4, "nbformat_minor": 5, "metadata": {}, "cells": [
+            {"cell_type": "code", "source": ["print(1)"], "metadata": {},
+             "execution_count": None, "outputs": []}]}
+        notebook.write_text(json.dumps(nb))
+        command(self.one, "add", "notebook.ipynb")
+        command(self.one, "commit", "-m", "notebook")
+        command(self.one, "push", "origin", "main")
+        nb["cells"][0]["source"] = ["print(2)"]
+        nb["cells"][0]["execution_count"] = 2
+        nb["cells"][0]["outputs"] = [{"output_type": "stream", "name": "stdout", "text": ["2\\n"]}]
+        notebook.write_text(json.dumps(nb))
+        sync.sync_once(self.env, False)
+        self.assertEqual(json.loads(command(self.one, "show", "HEAD:notebook.ipynb")), nb)
+
+    def test_execution_metadata_is_ignored_but_other_metadata_is_preserved(self):
+        raw = {"nbformat": 4, "metadata": {}, "cells": [
+            {"cell_type": "code", "source": ["x = 1"], "metadata": {}, "outputs": [], "execution_count": None}]}
+        changed = json.loads(json.dumps(raw))
+        changed["cells"][0]["metadata"]["execution"] = {"iopub.execute_input": "now"}
+        self.assertEqual(sync.notebook_without_volatile_outputs(json.dumps(raw).encode()),
+                         sync.notebook_without_volatile_outputs(json.dumps(changed).encode()))
+        changed["cells"][0]["metadata"]["tags"] = ["important"]
+        self.assertNotEqual(sync.notebook_without_volatile_outputs(json.dumps(raw).encode()),
+                            sync.notebook_without_volatile_outputs(json.dumps(changed).encode()))
+
+    def test_recovery_cell_fast_forwards_without_losing_dirty_notebook(self):
+        (self.one / "transfer_learning.ipynb").write_text('{"cells": [], "metadata": {}}')
+        command(self.one, "add", "transfer_learning.ipynb")
+        command(self.one, "commit", "-m", "add notebook")
+        command(self.one, "push", "origin", "main")
+        command(self.two, "pull", "--ff-only")
+        (self.two / "sync.py").write_text("# remote helper")
+        (self.two / "README.md").write_text("remote instructions")
+        command(self.two, "add", "sync.py", "README.md")
+        command(self.two, "commit", "-m", "new synchronizer")
+        command(self.two, "push", "origin", "main")
+        modified = '{"cells": [], "metadata": {"unsent": true}}'
+        (self.one / "transfer_learning.ipynb").write_text(modified)
+        doc = (SCRIPT.parent / "COLAB_RECUPERACAO.md").read_text()
+        recovery = doc.split('```python')[2].split('```')[0]
+        recovery = recovery.replace("Path('/content/drive/MyDrive/vision-transfer-learning')", f"Path({str(self.one)!r})")
+        recovery = recovery.replace('https://github.com/Gengo250/vision-transfer-learning.git', str(self.base / 'remote.git'))
+        with contextlib.redirect_stdout(io.StringIO()):
+            exec(compile(recovery, 'recovery-cell', 'exec'), {})
+        self.assertEqual((self.one / 'transfer_learning.ipynb').read_text(), modified)
+        self.assertEqual((self.one / 'sync.py').read_text(), '# remote helper')
+        self.assertEqual((self.one / 'README.md').read_text(), 'remote instructions')
+        self.assertEqual(command(self.one, 'rev-list', '--left-right', '--count', 'HEAD...origin/main'), '0\t0')
+
+    def test_recovery_cell_refuses_overlapping_modification(self):
+        self.remote_change()
+        (self.one / 'remote.txt').write_text('do not overwrite')
+        doc = (SCRIPT.parent / 'COLAB_RECUPERACAO.md').read_text()
+        recovery = doc.split('```python')[2].split('```')[0]
+        recovery = recovery.replace("Path('/content/drive/MyDrive/vision-transfer-learning')", f"Path({str(self.one)!r})")
+        recovery = recovery.replace('https://github.com/Gengo250/vision-transfer-learning.git', str(self.base / 'remote.git'))
+        with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(RuntimeError):
+            exec(compile(recovery, 'recovery-cell', 'exec'), {})
+        self.assertEqual((self.one / 'remote.txt').read_text(), 'do not overwrite')
 
     def test_remote_change_stops_active_monitor_even_when_clean(self):
         self.remote_change()

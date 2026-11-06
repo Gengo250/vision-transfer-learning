@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import argparse
+import copy
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -113,17 +115,55 @@ def initialize(env: dict[str, str], colab: bool):
     fetch(env)
     ahead, behind = relation(env)
     if behind:
-        if ahead or status(env):
-            raise SyncError("A main remota avançou e há commits ou alterações locais. "
-                            "Resolva a divergência manualmente; nenhum arquivo foi sobrescrito.")
+        if ahead:
+            raise SyncError("Há commits locais e remotos divergentes. Resolva a divergência manualmente.")
         if colab and git("diff", "--name-only", "-z", "HEAD", f"refs/remotes/origin/{BRANCH}",
                          "--", "colab.ipynb", env=env).stdout:
             raise SyncError("O colab.ipynb remoto mudou e pode estar aberto no navegador. "
                             "Feche o notebook e atualize a cópia do Drive manualmente antes de continuar.")
-        git("merge", "--ff-only", "--no-overwrite-ignore", f"refs/remotes/origin/{BRANCH}", env=env)
+        try:
+            git("merge", "--ff-only", "--no-overwrite-ignore", f"refs/remotes/origin/{BRANCH}", env=env)
+        except SyncError as error:
+            raise SyncError(f"Atualização não aplicada; confira alterações locais e possíveis conflitos. {error}") from error
         print("Atualizações do GitHub recebidas.", flush=True)
     else:
         print("Repositório conferido; nenhuma atualização remota pendente.", flush=True)
+
+
+def notebook_without_volatile_outputs(data: bytes):
+    """Compare notebooks without changing or discarding the saved original."""
+    notebook = copy.deepcopy(json.loads(data))
+    if not isinstance(notebook, dict) or not isinstance(notebook.get("cells"), list):
+        raise ValueError("notebook inválido")
+    for cell in notebook["cells"]:
+        if not isinstance(cell, dict):
+            raise ValueError("célula inválida")
+        if isinstance(cell.get("source"), list):
+            cell["source"] = "".join(cell["source"])
+        if cell.get("cell_type") == "code":
+            cell.pop("outputs", None)
+            cell.pop("execution_count", None)
+        if isinstance(cell.get("metadata"), dict):
+            cell["metadata"].pop("execution", None)
+    return notebook
+
+
+def output_only_notebooks(env: dict[str, str]) -> list[str]:
+    paths = git("diff", "--name-only", "--diff-filter=M", "-z", "HEAD", "--", env=env).stdout.split(b"\0")
+    excluded = []
+    for raw in paths:
+        if not raw or not raw.endswith(b".ipynb"):
+            continue
+        path = os.fsdecode(raw)
+        try:
+            old = git("show", f"HEAD:{path}", env=env).stdout
+            current = (REPO / path).read_bytes()
+            if notebook_without_volatile_outputs(old) == notebook_without_volatile_outputs(current):
+                excluded.append(path)
+        except (OSError, ValueError, TypeError, SyncError):
+            # Invalid or unparseable notebooks are never silently excluded.
+            continue
+    return excluded
 
 
 def sync_once(env: dict[str, str], colab: bool):
@@ -134,7 +174,11 @@ def sync_once(env: dict[str, str], colab: bool):
         raise SyncError("A main remota avançou durante o trabalho. Salve e feche os editores; "
                         "reinicie a sincronização para atualizar. Se houver alterações locais, resolva a divergência manualmente.")
     if status(env):
-        git("add", "--all", "--", ".", env=env)
+        excluded = output_only_notebooks(env)
+        git("add", "--all", "--", ".", *(f":(exclude,literal){path}" for path in excluded), env=env)
+        if excluded:
+            print("Outputs e contagens permanecem no notebook local, sem commit automático: "
+                  + ", ".join(excluded), flush=True)
         if git("diff", "--cached", "--quiet", env=env, check=False).returncode:
             args = ["commit", "-m", "Sincronização automática"]
             if colab:
