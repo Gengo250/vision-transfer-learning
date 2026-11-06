@@ -3,3 +3,9 @@ __pycache__/
 .ipynb_checkpoints/
 data/
 runs/results/
+
+# Segredos locais nunca devem entrar em commits automáticos.
+.env
+.env.*
+*.pem
+*.key
