@@ -4,7 +4,7 @@ __pycache__/
 data/
 runs/results/
 
-# Segredos locais nunca devem entrar em commits automáticos.
+# Segredos locais
 .env
 .env.*
 *.pem

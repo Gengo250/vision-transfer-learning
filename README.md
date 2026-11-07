@@ -1,59 +1,31 @@
 # Vision Transfer Learning
 
-Projeto inicial em Python 3.12, gerenciado com [uv](https://docs.astral.sh/uv/). Compatível com Linux e Windows.
+Projeto de visão computacional com PyTorch. O notebook começa com diagnóstico de CPU/GPU e acesso aos dados; os modelos e o treinamento ainda serão desenvolvidos.
 
-Instale o uv e, na pasta do projeto, escolha **um** perfil:
+## Sem GPU: Google Colab
 
-```sh
-uv sync --extra cpu
-```
+1. Abra [transfer_learning.ipynb no Colab](https://colab.research.google.com/github/Gengo250/vision-transfer-learning/blob/main/transfer_learning.ipynb), depois que a versão desejada estiver no GitHub. Também é possível enviar o arquivo `.ipynb` local pelo menu **Arquivo → Fazer upload de notebook**.
+2. Em **Ambiente de execução → Alterar tipo de ambiente de execução**, escolha **T4 GPU**, se disponível, e conecte.
+3. Execute a célula de diagnóstico e confirme `CUDA disponível: True` e `Operação CUDA concluída`. O Colab define a disponibilidade e o tipo da GPU.
+4. Execute a célula do Drive, autorize o acesso e ajuste `DATA_DIR` para a pasta do seu dataset. O Drive precisa conter os dados previamente; a célula não baixa nem altera arquivos.
+5. Desenvolva e execute as células de treinamento no notebook. Para guardar resultados além da sessão, escolha explicitamente um caminho no Drive, sem sobrescrever arquivos existentes.
 
-Para GPU NVIDIA com driver compatível com CUDA 12.8:
+O Colab fornece PyTorch e TorchVision no runtime; o notebook não os reinstala. As alterações na cópia do Colab não são sincronizadas automaticamente com este repositório: baixe o notebook atualizado se quiser trazê-las de volta. Também é possível usar a [extensão Google Colab para VS Code](https://github.com/googlecolab/colab-vscode/wiki/User-Guide): abra o notebook, escolha **Select Kernel → Colab → New Colab Server**, selecione T4 GPU e execute as células. O kernel remoto acessa o Drive, não os arquivos locais automaticamente.
 
-```sh
-uv sync --extra cu128
-```
+## Com GPU NVIDIA: computador local
 
-Inicie o JupyterLab usando o mesmo perfil escolhido na instalação:
-
-```sh
-uv run --extra cpu jupyter lab
-```
-
-Ou, para CUDA:
+Instale o [uv](https://docs.astral.sh/uv/getting-started/installation/) e um driver NVIDIA compatível com CUDA 12.8. Na pasta do projeto, execute:
 
 ```sh
-uv run --extra cu128 jupyter lab
+uv run --no-sync python scripts/setup_gpu.py
 ```
 
-Abra `transfer_learning.ipynb` e execute a célula de diagnóstico. Os diretórios `data/train`, `data/val`, `data/test` e `runs/results` são locais e ignorados pelo Git; crie-os se não existirem após clonar o repositório.
+O mesmo comando funciona no Linux e no Windows. O script instala as dependências na `.venv` com `uv`, seleciona o PyTorch CUDA 12.8 e testa uma operação na GPU. Depois abra `transfer_learning.ipynb` no VS Code, selecione o interpretador Python da `.venv`, coloque seu dataset em `data/` e execute o notebook. Ajuste `DATA_DIR` se estiver em outro local.
 
-## Sincronização com GitHub e Colab
+Para abrir o JupyterLab pelo terminal:
 
-A sincronização funciona enquanto o monitor estiver ativo. Ela usa somente a branch `main`, respeita o `.gitignore` e não executa push forçado. Arquivos já rastreados que também passaram a ser ignorados precisam de revisão manual. Não coloque credenciais em arquivos do projeto: o Git não detecta todos os segredos.
+```sh
+uv run --no-sync jupyter lab
+```
 
-### Configuração inicial
-
-1. No GitHub, crie um token fine-grained para este repositório, com permissão **Contents: Read and write**. No Colab, em **Segredos**, salve-o como `GITHUB_TOKEN` e permita que `colab.ipynb` acesse o segredo. O token não entra na URL remota nem é salvo no repositório.
-2. Após disponibilizar estes arquivos na `main` do GitHub, abra `colab.ipynb` no Colab, execute a célula inicial e autorize o Google Drive. O clone persistente será criado em `Meu Drive/vision-transfer-learning`. Nas sessões seguintes, abra os notebooks a partir dessa pasta do Drive e execute novamente a célula inicial.
-3. No computador local, configure o acesso ao GitHub pelo SSH ou pelo gerenciador de credenciais do Git, além de seu nome e e-mail de commit no Git. Na raiz do projeto, inicie o monitor em um terminal e mantenha-o aberto:
-
-   ```sh
-   uv run --no-sync python sync.py
-   ```
-
-   Também é possível executar `python sync.py` com Python 3. Interrompa com `Ctrl+C`.
-
-Se a pasta do Drive for um clone antigo ou a atualização estiver bloqueada, execute as células de [diagnóstico e recuperação](COLAB_RECUPERACAO.md) em um notebook separado. Elas preservam alterações locais e não exigem que `sync.py` já esteja no Drive.
-
-Antes de iniciar o monitor em qualquer ambiente, **salve e feche os editores que possam ter arquivos abertos nessa cópia**; depois da atualização inicial, reabra os arquivos. O Git não consegue identificar alterações ainda não salvas no VS Code ou no navegador. No Colab, executar uma célula não salva automaticamente edições pendentes do notebook: salve o notebook no Drive e confirme que a gravação terminou. O notebook aberto a partir do GitHub pode ser uma cópia diferente da pasta do Drive.
-
-O monitor consulta o GitHub e faz um commit e push quando os arquivos salvos permanecem estáveis por pelo menos um minuto. No Colab, a célula opcional de publicação solicita uma verificação antecipada ao mesmo monitor. Alterações ignoradas, como `data/` e `runs/results/`, não são enviadas. Treinamentos e dados precisam ser armazenados separadamente no Drive quando sua persistência for necessária. A sessão Colab pode ser encerrada sem aviso; depois disso, o monitor para, e alterações ainda não enviadas permanecem somente no Drive até a próxima sessão.
-
-Para proteger arquivos abertos, atualizações remotas são aplicadas apenas ao iniciar o monitor, sem commits divergentes e quando o Git consegue avançar sem sobrescrever arquivos locais, inclusive ignorados. Se a `main` remota avançar enquanto o monitor estiver ativo, ele para: salve e feche os editores e reinicie-o. Se houver alterações locais no mesmo arquivo atualizado remotamente, ou commits divergentes, concilie os trabalhos manualmente antes de reiniciar. Falhas de autenticação, conflitos e índice já preparado também interrompem a execução com uma mensagem; o monitor nunca limpa o índice ou apaga alterações.
-
-Uma pasta oculta `.vision-transfer-learning.sync-lock` ao lado do repositório impede monitores concorrentes que compartilhem o mesmo sistema de arquivos. Após interrupção abrupta, o bloqueio pode permanecer: somente depois de verificar que nenhum monitor está ativo, remova essa pasta vazia e reinicie. O Google Drive montado não oferece garantias suficientes de bloqueio distribuído entre máquinas/sessões: use **uma única sessão Colab por pasta**. As cópias local e do Drive podem ter monitores próprios; se ambas produzirem commits concorrentes, o push recusado preserva o commit local para conciliação.
-
-Se o próprio `colab.ipynb` tiver mudado no GitHub, a atualização no Colab também é interrompida: feche-o e atualize a cópia do Drive manualmente antes de reabrir, evitando que o navegador sobrescreva uma versão mais nova.
-
-Outputs, contagens de execução e metadados temporários de execução, quando são as únicas mudanças de um notebook já rastreado, permanecem na cópia local sem gerar commit automático. Eles não são apagados nem enviados ao GitHub nessa situação; uma alteração de código, texto ou outros metadados inclui o notebook completo, com seus outputs. Isso pode manter o notebook marcado como modificado e bloquear uma atualização remota do mesmo arquivo.
+`data/` e `runs/results/` são ignorados pelo Git. O instalador não modifica datasets, checkpoints nem resultados. Linux e Windows são suportados; a execução CUDA depende de GPU e driver compatíveis.
