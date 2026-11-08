@@ -1,182 +1,85 @@
-# Parâmetros de treinamento HRSID
+# HRSID: detecção e segmentação de navios
 
-Este documento explica cada parâmetro de `notebooks/hrsid_mask_rcnn_transfer_learning.ipynb`: o que controla, o valor atual e o efeito de mudá-lo. O experimento DeepPCB é independente e continua documentado em [parametros_treinamento.md](parametros_treinamento.md).
+Este documento descreve [hrsid_mask_rcnn_transfer_learning.ipynb](../notebooks/hrsid_mask_rcnn_transfer_learning.ipynb), independente do experimento [DeepPCB](parametros_treinamento.md). Consulte o [ambiente compartilhado](environment.md) para instalação e execução.
 
-Os parâmetros ficam no dicionário `CONFIG`, na seção 2 do notebook. Depois de mudar o `CONFIG`, reexecute a célula dele; `batch_size` e `num_workers` só passam a valer depois de recriar os DataLoaders (seção 8).
+## Dataset e preparação
 
-> **Regra para comparar estratégias:** `frozen_backbone`, `partial_finetune` e `full_finetune` devem usar os mesmos valores em tudo, exceto `experiment` e `trainable_layers`. Cada rodada salva o `CONFIG` usado em `config.json`.
+O [HRSID oficial](https://github.com/chaozhong2010/HRSID) contém recortes de imagens de radar de abertura sintética (SAR), com navios em regiões costeiras e oceânicas. As imagens de 800 × 800 pixels possuem aparência monocromática, ruído *speckle* e variações de contexto. As anotações COCO descrevem caixas e máscaras por instância; o notebook trata uma classe de interesse, navio, além do fundo.
 
----
+O arquivo `MyDrive/vision-transfer-learning/dataset/HRSID_jpg.zip` pode estar armazenado no Drive, mas o notebook atual **não lê nem extrai o ZIP**. Se houver apenas o arquivo compactado, extraia-o previamente no Drive, preservando imagens e anotações, e configure o caminho da pasta extraída. Nenhum download do dataset é necessário quando ele já está disponível.
 
-## 1. Reprodutibilidade e dados
+```text
+MyDrive/vision-transfer-learning/dataset/
+├── DeepPCB/PCBData/
+├── HRSID_jpg.zip              # arquivo armazenado, se disponível
+└── HRSID/                     # pasta extraída usada pelo notebook
+    └── .../HRSID_JPG/
+        ├── annotations/       # train2017.json, test2017.json, etc.
+        └── JPEGImages/
+```
 
-### `seed` = `42`
+Com `CONFIG['dataset_dir']=''`, o notebook procura `data/HRSID/` ou `data/HRSID_jpg/` localmente; no Colab procura `MyDrive/vision-transfer-learning/dataset/HRSID/` ou `HRSID_jpg/`. Também aceita um caminho local, disco externo ou Drive montado/sincronizado, absoluto ou relativo à raiz do projeto. Descobre recursivamente as anotações e a pasta de imagens. Não copia os arquivos. `results_dir` pode mudar o destino dos resultados, que não pode ficar dentro do dataset.
 
-Semente de Python, NumPy e PyTorch (CPU e CUDA). Controla a inicialização das cabeças novas, a ordem de embaralhamento do treino, o espelhamento horizontal, a amostra das checagens de pixel e a escolha das cenas de validação. Na GPU, algumas operações não são determinísticas: rodar com 42, 43 e 44 mostra a variação natural do modelo.
+A leitura converte a imagem para RGB e tensor em `[0, 1]`; dados originalmente monocromáticos tornam-se três canais. O modelo aplica sua normalização interna. Caixas COCO XYWH são convertidas para XYXY; polígonos e RLE são decodificados em máscaras por instância. Caixas degeneradas e máscaras vazias são descartadas em conjunto; imagens sem navios são mantidas como exemplos negativos. No treino, há espelhamento horizontal conjunto de imagem, caixas e máscaras, com probabilidade 0,5. A geometria vista de cima motiva o teste dessa transformação, sem garantir ganho no domínio SAR.
 
-### `dataset_dir` = `''`
+### Verificação de integridade
 
-Pasta do HRSID já extraído. Aceita qualquer caminho: pasta local, disco externo ou Google Drive montado ou sincronizado. Caminhos relativos partem da raiz do projeto. Vazio, vale o padrão do ambiente — `data/HRSID/` (ou `data/HRSID_jpg/`) na raiz do projeto quando a execução é local, ou `MyDrive/vision-transfer-learning/dataset/HRSID/` no Colab.
+O notebook identifica arquivos de treino e teste, conta imagens, anotações e categorias, verifica arquivos ausentes, IDs e nomes duplicados, caixas inválidas ou fora da imagem e estrutura das segmentações. As dimensões declaradas são resumidas; uma amostra de até `sample_images=200` imagens por split é aberta para verificar formato, modo, dimensões reais e máscaras decodificadas. Os problemas encontrados são registrados em `reports/integrity_<split>.csv`; a verificação de pixels não cobre todos os arquivos. Anotações auxiliares, como listas costeiras e oceânicas, são listadas, não auditadas como splits.
 
-A estrutura interna é descoberta na seção 4: a pasta pode conter `HRSID_JPG/annotations/` e `HRSID_JPG/JPEGImages/` ou já ser a pasta das anotações. O notebook não baixa, não descompacta e não copia o dataset; se o caminho não existir, a seção 3 para com uma mensagem explicando o que configurar.
+A referência publicada indica 5.604 imagens e 16.951 navios; esse número de navios corresponde ao arquivo combinado. Em uma auditoria anterior da cópia oficial, `train2017.json` e `test2017.json` continham, respectivamente, 3.642/1.962 imagens e 11.047/5.922 anotações: a soma, 16.969, difere do combinado. Essas contagens são contexto, não resultados verificados nesta revisão; use o relatório da cópia executada.
 
-### `results_dir` = `None`
+### Divisão e vazamento
 
-Sobrescreve o destino dos resultados. Com `None`, vale o padrão: `runs/results/hrsid_mask_rcnn_v2/` na raiz do projeto quando a execução é local, ou em `MyDrive/vision-transfer-learning/runs/results/hrsid_mask_rcnn_v2/` no Colab, onde os arquivos sobrevivem ao fim da sessão.
+Quando presentes, os splits oficiais de treino e teste são preservados. A validação é extraída do treino por cena, identificada pelo prefixo antes de `_`, visando `val_fraction=0.15` das imagens. Cenas têm tamanhos diferentes, de modo que a fração é aproximada. O notebook informa as cenas compartilhadas entre splits e grava `reports/split.csv`. Se não houver dois grupos de cenas, a função recorre à divisão por imagem: nesse caso não há garantia de isolamento de cena. Sem os dois splits oficiais, deriva treino, validação e teste das anotações disponíveis; essa alternativa não é o teste oficial.
 
-### `val_fraction` = `0.15`
+Na cópia auditada anteriormente, treino e teste oficiais compartilhavam cenas. A separação por cena evita a mesma fonte entre treino e validação quando há grupos suficientes, mas o teste oficial pode avaliar recortes novos de cenas já vistas. Isso limita a interpretação para cenas ou sensores independentes. `limit_images` amostra cada split após a divisão para ensaios rápidos; os resultados limitados não representam o conjunto completo.
 
-Fração de imagens do treino oficial reservada para validação. A separação leva cenas inteiras: recortes da mesma cena SAR nunca ficam dos dois lados. Como cada cena tem um número diferente de recortes, a fração real fica próxima, não exata.
+## Modelo e transferência
 
-### `limit_images` = `None`
+O notebook usa o [`maskrcnn_resnet50_fpn_v2`](https://docs.pytorch.org/vision/stable/models/generated/torchvision.models.detection.maskrcnn_resnet50_fpn_v2.html) oficial com `MaskRCNN_ResNet50_FPN_V2_Weights.COCO_V1`. O ResNet-50 extrai características e a Feature Pyramid Network (FPN) fornece representações em várias escalas. A Region Proposal Network (RPN) propõe regiões; RoI Align as amostra para as cabeças que classificam e refinam caixas e para a cabeça que prevê uma máscara por instância.
 
-Limita o número de imagens por split. Serve para ensaios rápidos (`200`, por exemplo) e para verificar o notebook ponta a ponta em minutos. Com `None`, usa o dataset inteiro. Resultados obtidos com limite não são comparáveis com os do dataset completo.
+O notebook troca `FastRCNNPredictor` e `MaskRCNNPredictor` por preditores de duas classes: 0 para fundo e 1 para navio. As demais partes usam inicialmente os pesos COCO. Entrada: lista de tensores RGB e alvos com caixas, rótulos, máscaras, `image_id`, `area` e `iscrowd`. Saída em inferência: caixas, classes, scores e máscaras por imagem. Bordas e padrões espaciais aprendidos em fotografias podem ser úteis também em SAR, mas a diferença de domínio exige avaliação; não se pressupõe que a transferência melhore os resultados.
 
-### `sample_images` = `200`
+As três estratégias estão implementadas e são selecionadas uma por rodada; sua execução completa e comparação dependem de treinamento real:
 
-Quantas imagens por split são realmente abertas nas checagens de pixel: formato, canais, dimensão real e decodificação das máscaras. Contagens, ids, nomes, caixas e estrutura das segmentações são conferidos em **todas** as anotações; só a leitura dos arquivos é amostrada, porque abrir 5.604 imagens é lento, principalmente num Drive montado. O relatório informa quantas foram abertas.
-
----
-
-## 2. Estratégia de transferência
-
-### `experiment` = `'frozen_backbone'`
-
-Escolhe o que recebe gradiente. As três estratégias partem dos mesmos pesos COCO e usam o mesmo detector, o Mask R-CNN ResNet-50 FPN V2.
-
-| Valor | Treinado | Congelado | Parâmetros treináveis |
-| --- | --- | --- | --- |
-| `'frozen_backbone'` | RPN e cabeças de detecção e de máscara | ResNet-50 e FPN | ~22 M de 68 M |
-| `'partial_finetune'` | blocos finais do ResNet-50, FPN, RPN e cabeças | blocos iniciais do ResNet-50 | depende de `trainable_layers` |
-| `'full_finetune'` | tudo | nada | ~68 M |
-
-- **frozen_backbone** mede quanto das características do COCO serve para SAR sem nenhum ajuste. É a mais rápida por época e a que menos consome memória.
-- **partial_finetune** adapta as camadas de alto nível, que são as mais específicas de domínio, sem mexer nas camadas iniciais de borda e textura.
-- **full_finetune** adapta tudo e costuma dar o melhor resultado, com o maior custo e o maior risco de sobreajuste.
-
-Nos três casos, `FastRCNNPredictor` e `MaskRCNNPredictor` são trocados por versões de duas classes: fundo e navio.
-
-### `trainable_layers` = `2`
-
-Só vale em `partial_finetune`. É o `trainable_backbone_layers` oficial do torchvision: quantos blocos do ResNet-50 recebem gradiente, contados do fim para o começo. `1` libera `layer4`; `2` libera `layer3` e `layer4`; `3` acrescenta `layer2`. Valores maiores aproximam o resultado do fine-tuning completo.
-
-O `maskrcnn_resnet50_fpn_v2` usa `BatchNorm2d` comum, e não `FrozenBatchNorm2d`. Por isso o notebook também coloca os blocos congelados em `eval()` durante o treino: sem isso, as médias e variâncias continuariam sendo atualizadas e os pesos "congelados" mudariam de comportamento.
-
----
-
-## 3. Duração do treinamento
-
-### `epochs` = `15`
-
-Número máximo de épocas. Uma época passa pelas imagens de treino e avalia a validação inteira. O treino pode parar antes por `patience`.
-
-### `patience` = `5`
-
-Parada antecipada. Se a mAP@0.50:0.95 de máscara na validação não melhorar por 5 épocas seguidas, o treino para. Só a melhor época fica em `checkpoints/best.pt`.
-
----
-
-## 4. Carregamento de dados e desempenho
-
-### `batch_size` = `2`
-
-Imagens por passo de otimização. As imagens do HRSID têm 800×800 px e entram no modelo nessa escala, então o consumo de memória é alto: 2 é o valor seguro para a GPU T4 do Colab com `amp=True`. Se aumentar o batch, considere aumentar `learning_rate` na mesma proporção.
-
-### `num_workers` = `2`
-
-Processos paralelos de leitura. No Colab, 2 costuma ser o melhor equilíbrio. Use `0` no Windows ou quando aparecerem erros de processo filho no Jupyter.
-
-### `amp` = `True`
-
-Precisão mista na GPU: parte das operações roda em 16 bits, com `GradScaler` protegendo os gradientes pequenos. Reduz memória e tempo sem mudar imagens nem arquitetura. Vale só para CUDA; em CPU e MPS fica desligado sozinho. Na avaliação, as predições voltam para 32 bits antes das métricas. Use `False` se aparecer "Perda não finita".
-
-### `horizontal_flip` = `0.5`
-
-Probabilidade de espelhar a imagem na horizontal, junto com caixas e máscaras. É a única aumentação: imagens SAR vistas de cima não têm "lado certo", então o espelhamento é seguro. Use `0.0` para desligar.
-
-### `device` = `'auto'`
-
-Com `auto`, escolhe CUDA, depois MPS (Apple Silicon), depois CPU. Aceita `'cuda'`, `'mps'` ou `'cpu'` para forçar. No MPS, alguma operação do Mask R-CNN pode não ter implementação Metal; nesse caso, exporte `PYTORCH_ENABLE_MPS_FALLBACK=1` antes de abrir o Jupyter ou use `'cpu'`.
-
----
-
-## 5. Otimizador
-
-O otimizador é o **AdamW**, aplicado apenas aos parâmetros com `requires_grad`. O agendamento é `CosineAnnealingLR`, que leva a taxa de aprendizado a zero ao longo de `epochs`, sem degraus.
-
-### `learning_rate` = `0.0001`
-
-Taxa inicial. 1e-4 é a escala usual do AdamW em fine-tuning de detectores. Com SGD, a mesma taxa seria baixa demais — trocar de otimizador exige recalibrar esse valor.
-
-### `weight_decay` = `0.0005`
-
-Regularização L2. 5e-4 é o valor das receitas clássicas de R-CNN e reduz o sobreajuste, que importa mais em `full_finetune`.
-
----
-
-## 6. Avaliação
-
-### `confidence_threshold` = `0.5`
-
-Confiança mínima para uma predição entrar em precisão, recall, F1 e nas figuras de predição. **Não afeta a mAP**, que percorre todas as faixas de confiança por conta própria.
-
-### `iou_threshold` = `0.5`
-
-Sobreposição mínima entre predição e alvo para a detecção contar como acerto em precisão, recall e F1. Vale tanto para a IoU de caixa quanto para a IoU de máscara; cada alvo é casado no máximo uma vez, do maior para o menor score.
-
-### `mask_threshold` = `0.5`
-
-Limiar que transforma a máscara contínua prevista em máscara binária. Afeta a mAP de máscara, a IoU de máscara e as figuras. Valores menores engordam as máscaras; maiores as afinam.
-
-O checkpoint guardado é o de maior **mAP@0.50:0.95 de máscara** na validação. As métricas registradas por época são: `box_map_50`, `box_map_50_95`, `mask_map_50`, `mask_map_50_95`, precisão, recall e F1 de caixa e de máscara, com TP, FP e FN.
-
----
-
-## 7. Controle da execução
-
-### `run_training` = `False`
-
-Com `True`, a célula de execução cria uma rodada e treina. Vem desligado para que o notebook possa ser lido e validado sem iniciar um treino longo.
-
-### `evaluate_test` = `False`
-
-Com `True`, avalia um checkpoint no teste oficial e salva `metrics_test.json`. Use **uma única vez**, depois de escolher a estratégia pela validação.
-
-### `checkpoint_path` = `None`
-
-Checkpoint que `evaluate_test` e a seção 17 usam quando não há treino na mesma execução. Caminhos relativos partem da raiz do projeto. Carregue apenas checkpoints de origem confiável: o arquivo é aberto com `weights_only=False`.
-
----
-
-## 8. Padrões do modelo que o notebook não altera
-
-Vêm do `maskrcnn_resnet50_fpn_v2` do torchvision.
-
-| Parâmetro | Padrão | Efeito |
+| `experiment` | Treinável | Congelado |
 | --- | --- | --- |
-| `min_size` / `max_size` | 800 / 1333 | As imagens do HRSID já têm 800 px e entram sem reescala. |
-| `image_mean` / `image_std` | médias do ImageNet | Normalização aplicada dentro do modelo; as imagens entram em `[0, 1]`. |
-| Tamanhos das âncoras | 32, 64, 128, 256, 512 px | Um tamanho por nível da FPN. A maioria dos navios cai na menor âncora. |
-| `box_score_thresh` | 0,05 | Confiança mínima das predições devolvidas. |
-| `box_nms_thresh` | 0,5 | IoU de supressão de caixas duplicadas. |
-| `box_detections_per_img` | 100 | Máximo de detecções por imagem. |
-| Máscara da cabeça | 28×28 por instância | Redimensionada para a caixa prevista na saída. |
+| `frozen_backbone` | RPN e cabeças de caixa e máscara | ResNet-50 e FPN |
+| `partial_finetune` | FPN, RPN, cabeças e blocos finais do ResNet-50 | Blocos iniciais do ResNet-50 |
+| `full_finetune` | Todo o modelo | Nada |
 
----
+A estratégia parcial usa `trainable_layers=2` por padrão, liberando `layer3` e `layer4`; o construtor oficial recebe 0, o valor configurado ou 5, respectivamente. Os blocos congelados ficam em `eval()` durante o treino para impedir a atualização das estatísticas de BatchNorm. Manter os demais parâmetros e divisão iguais ajuda a comparar as estratégias, mas não há resultado de desempenho afirmado aqui.
 
-## Arquivos gerados por rodada
+## Configuração e treinamento
 
-Cada rodada cria `runs/results/hrsid_mask_rcnn_v2/<experimento>/<data_hora>/`:
+Valores atuais em `CONFIG`:
 
-| Arquivo | Conteúdo |
-| --- | --- |
-| `config.json` | o `CONFIG` usado |
-| `reports/split.csv` | divisão treino/validação/teste por imagem, com a cena de origem |
-| `reports/parameters.csv` | parâmetros treináveis e congelados por parte do modelo |
-| `reports/history.csv` | perdas e métricas de validação por época |
-| `reports/metrics_validation.json`, `metrics_test.json` | métricas da melhor época e do teste |
-| `checkpoints/best.pt` | pesos, otimizador, agendador, escala do AMP e `CONFIG` da melhor época |
-| `figures/curve_<métrica>.png`, `training_curves.png` | uma curva por métrica e o painel |
-| `predictions/prediction_<imagem>.png` | comparação entre anotação e predição |
+| Parâmetro | Padrão | Função |
+| --- | --- | --- |
+| `seed` | `42` | Sementes de Python, NumPy e PyTorch |
+| `experiment`, `trainable_layers` | `frozen_backbone`, `2` | Estratégia e blocos finais no fine-tuning parcial |
+| `epochs`, `patience` | `15`, `5` | Máximo de épocas e parada sem melhora |
+| `batch_size`, `num_workers` | `2`, `2` | Imagens por batch e processos de leitura |
+| `amp`, `device` | `True`, `auto` | AMP apenas em CUDA; seleção automática ou `cuda`, `mps`, `cpu` |
+| `learning_rate`, `weight_decay` | `0.0001`, `0.0005` | AdamW nos parâmetros treináveis |
+| `val_fraction`, `horizontal_flip` | `0.15`, `0.5` | Fração aproximada de validação e probabilidade de espelhamento |
+| `confidence_threshold`, `iou_threshold`, `mask_threshold` | `0.5`, `0.5`, `0.5` | Limiares de score, correspondência e binarização de máscaras |
+| `dataset_dir`, `results_dir` | `''`, `None` | Caminhos dos dados extraídos e dos resultados |
+| `limit_images`, `sample_images` | `None`, `200` | Limite opcional por split e amostra de checagem de pixels |
+| `run_training`, `evaluate_test`, `checkpoint_path` | `True`, `False`, `None` | Treinamento, teste e checkpoint externo |
 
-Fora das rodadas, a pasta `runs/results/hrsid_mask_rcnn_v2/` guarda o que descreve o dataset: `reports/integrity_*.csv`, `reports/split.csv` e as figuras da análise exploratória.
+Após alterar `CONFIG`, reexecute sua célula e recrie os DataLoaders se mudar seus parâmetros. O `collate_fn` preserva listas de imagens e alvos de tamanhos variáveis; somente treino embaralha e aumenta dados. `CosineAnnealingLR` agenda a taxa ao longo das épocas. A perda de treino soma as perdas de classificação, regressão de caixa, máscara, classificação de objetos e regressão da RPN; componentes e total são registrados. Perda não finita interrompe o treino.
+
+Os padrões do TorchVision incluem redimensionamento mínimo/máximo de 800/1333, âncoras 32–512 por nível, score mínimo interno 0,05, NMS de caixa 0,5 e até 100 detecções por imagem; podem variar com a versão instalada. O limite de 100 pode restringir imagens com muitos navios. O cálculo de máscaras e mAP pode exigir memória e tempo consideráveis; `batch_size`, `limit_images`, dispositivo e acesso ao Drive afetam o custo. AMP não altera a resolução ou a arquitetura.
+
+## Avaliação e resultados
+
+A validação ocorre a cada época. TorchMetrics com backend pycocotools calcula separadamente `box_map_50`, `box_map_50_95`, `mask_map_50` e `mask_map_50_95`. Precisão, recall e F1 de caixa e máscara usam correspondência gulosa por score e os limiares de `CONFIG`, com TP, FP e FN. A mAP não usa o filtro adicional de confiança, mas o detector aplica seus próprios filtros; a mAP de máscara depende de `mask_threshold`, usado para binarizar as máscaras. Não há cálculo de perda de validação.
+
+O melhor checkpoint é escolhido pelo maior `mask_map_50_95` na validação; `patience` controla a parada antecipada. O teste oficial é opcional (`evaluate_test=True`) e deve ficar reservado até a escolha da estratégia. Sem treino na mesma execução, forneça `checkpoint_path`, relativo à raiz do projeto ou absoluto. Carregue apenas checkpoints confiáveis, pois `torch.load` usa `weights_only=False`. O checkpoint salva estados de otimizador, scheduler e scaler, mas não há rotina de retomada de treino.
+
+No destino padrão `runs/results/hrsid_mask_rcnn_v2/` do ambiente ativo, `reports/` e `figures/` na raiz contêm a análise do dataset. Cada rodada em `<experimento>/<data_hora>/` guarda `config.json`, divisão, contagem de parâmetros, histórico, métricas de validação e, quando solicitadas, de teste em `reports/`; `checkpoints/best.pt`; curvas individuais e painel em `figures/`; e visualizações em `predictions/`. As figuras de predição comparam imagem, anotação e saída, priorizando imagens de validação com mais navios. A localização depende de como o checkpoint é informado: ao apenas configurar `checkpoint_path` sem treino nem teste, usa-se o diretório geral de predições; quando há treino ou avaliação de teste, o caminho é derivado do checkpoint.
+
+Sementes facilitam a repetição, sem garantir determinismo em toda GPU. Avaliação por tamanho e por regime costeiro/oceânico e repetição com outras sementes são análises futuras; o notebook atual não registra mAP por tamanho ou regime. Os artefatos de cada execução são a fonte para resultados observados, e nenhum desempenho é presumido aqui.
+
+[Índice](README.md).
