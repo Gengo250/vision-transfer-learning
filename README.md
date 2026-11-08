@@ -45,6 +45,8 @@ Abra `notebooks/deep_pcb_transfer_learning.ipynb` e execute as células em ordem
 
 O treino vem desativado. Para iniciá-lo, ajuste `CONFIG['experiment']` e `CONFIG['run_training']`; para avaliar um checkpoint já salvo, use `evaluate_test` e `checkpoint_path`. Caminhos relativos de checkpoint partem da raiz do projeto no ambiente ativo.
 
+Cada parâmetro do `CONFIG` e os padrões do modelo que influenciam o treino estão explicados em [docs/parametros_treinamento.md](docs/parametros_treinamento.md).
+
 No Google Colab, abra o mesmo notebook, execute as células em ordem e autorize a montagem do Google Drive. O Colab usa os pacotes já presentes no runtime e instala somente os ausentes, sem sincronizar o ambiente `uv` local.
 
 ## Dados da rodada
