@@ -1,31 +1,27 @@
-# Vision Transfer Learning
+# DeepPCB — Transfer Learning
 
-Projeto de visão computacional com PyTorch. O notebook começa com diagnóstico de CPU/GPU e acesso aos dados; os modelos e o treinamento ainda serão desenvolvidos.
+Projeto de detecção de defeitos em placas usando Faster R-CNN ResNet50 FPN V2. O notebook compara treinamento do zero, backbone congelado e fine-tuning completo.
 
-## Sem GPU: Google Colab
+## Executar
 
-1. Abra [transfer_learning.ipynb no Colab](https://colab.research.google.com/github/Gengo250/vision-transfer-learning/blob/main/transfer_learning.ipynb), depois que a versão desejada estiver no GitHub. Também é possível enviar o arquivo `.ipynb` local pelo menu **Arquivo → Fazer upload de notebook**.
-2. Em **Ambiente de execução → Alterar tipo de ambiente de execução**, escolha **T4 GPU**, se disponível, e conecte.
-3. Execute a célula de diagnóstico e confirme `CUDA disponível: True` e `Operação CUDA concluída`. O Colab define a disponibilidade e o tipo da GPU.
-4. Execute a célula do Drive, autorize o acesso e ajuste `DATA_DIR` para a pasta do seu dataset. O Drive precisa conter os dados previamente; a célula não baixa nem altera arquivos.
-5. Desenvolva e execute as células de treinamento no notebook. Para guardar resultados além da sessão, escolha explicitamente um caminho no Drive, sem sobrescrever arquivos existentes.
+Disponibilize o [dataset DeepPCB](https://drive.google.com/drive/folders/1mdTe8Ez5r7KCi5ryaBf_onUCZJHOlPqH?usp=drive_link) já existente no caminho correspondente ao ambiente, com `trainval.txt`, `test.txt` e os grupos dentro de `PCBData/`:
 
-O Colab fornece PyTorch e TorchVision no runtime; o notebook não os reinstala. As alterações na cópia do Colab não são sincronizadas automaticamente com este repositório: baixe o notebook atualizado se quiser trazê-las de volta. Também é possível usar a [extensão Google Colab para VS Code](https://github.com/googlecolab/colab-vscode/wiki/User-Guide): abra o notebook, escolha **Select Kernel → Colab → New Colab Server**, selecione T4 GPU e execute as células. O kernel remoto acessa o Drive, não os arquivos locais automaticamente.
+- Local: `data/DeepPCB/PCBData/` na raiz do projeto.
+- Colab: `MyDrive/vision-transfer-learning/dataset/DeepPCB/PCBData/` no Google Drive.
 
-## Com GPU NVIDIA: computador local
+O notebook não baixa nem duplica o dataset.
 
-Instale o [uv](https://docs.astral.sh/uv/getting-started/installation/) e um driver NVIDIA compatível com CUDA 12.8. Na pasta do projeto, execute:
+Com Python 3.12 e [uv](https://docs.astral.sh/uv/):
 
 ```sh
-uv run --no-sync python scripts/setup_gpu.py
+uv sync --extra cpu
+uv run --extra cpu jupyter lab
 ```
 
-O mesmo comando funciona no Linux e no Windows. O script instala as dependências na `.venv` com `uv`, seleciona o PyTorch CUDA 12.8 e testa uma operação na GPU. Depois abra `transfer_learning.ipynb` no VS Code, selecione o interpretador Python da `.venv`, coloque seu dataset em `data/` e execute o notebook. Ajuste `DATA_DIR` se estiver em outro local.
+Abra `notebooks/deep_pcb_transfer_learning.ipynb` e execute em ordem. Para NVIDIA/CUDA 12.8, troque `cpu` por `cu128`. O notebook seleciona CUDA, MPS ou CPU conforme a disponibilidade.
 
-Para abrir o JupyterLab pelo terminal:
+No Google Colab, abra o mesmo notebook e execute as células em ordem. Autorize a montagem do Google Drive quando solicitada. O notebook usa os pacotes já disponíveis no runtime e instala somente os pacotes necessários que estiverem ausentes, sem sincronizar o ambiente local `uv`.
 
-```sh
-uv run --no-sync jupyter lab
-```
+O treino vem desativado. Para iniciá-lo, ajuste `CONFIG['experiment']` e `CONFIG['run_training']`; para testar um checkpoint selecionado, use `evaluate_test` e `checkpoint_path`. Cada rodada cria uma pasta em `runs/results/` no projeto local ou em `MyDrive/vision-transfer-learning/runs/results/` no Colab, com métricas, curvas de precisão, recall e F1, matriz de confusão e checkpoints. Caminhos relativos de checkpoint partem da raiz do projeto no ambiente ativo.
 
-`data/` e `runs/results/` são ignorados pelo Git. O instalador não modifica datasets, checkpoints nem resultados. Linux e Windows são suportados; a execução CUDA depende de GPU e driver compatíveis.
+O teste oficial compartilha grupos com os dados de desenvolvimento; seus resultados não medem generalização para grupos independentes. Precisão, recall e F1 dependem dos limiares configurados de confiança e IoU.
