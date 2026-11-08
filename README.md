@@ -49,7 +49,7 @@ No Google Colab, abra o mesmo notebook, execute as células em ordem e autorize 
 
 ## Dados da rodada
 
-O conjunto de imagens é um parâmetro em `CONFIG['dataset_dir']`, não o objeto do estudo. A rodada configurada usa o [DeepPCB](https://drive.google.com/drive/folders/1mdTe8Ez5r7KCi5ryaBf_onUCZJHOlPqH?usp=drive_link) com Faster R-CNN ResNet50 FPN V2.
+O conjunto de imagens é um parâmetro em `CONFIG['dataset_dir']`, não o objeto do estudo. A rodada configurada usa o [Dataset](https://drive.google.com/drive/folders/1mdTe8Ez5r7KCi5ryaBf_onUCZJHOlPqH?usp=drive_link) com Faster R-CNN ResNet50 FPN V2.
 
 Disponibilize a pasta já existente, com `trainval.txt`, `test.txt` e os grupos referenciados:
 
