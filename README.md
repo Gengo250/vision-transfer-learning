@@ -90,7 +90,7 @@ O [HRSID](https://github.com/chaozhong2010/HRSID) traz imagens SAR de 800×800 p
 
 | Ambiente | Padrão |
 | --- | --- |
-| Local | `data/HRSID/` na raiz do projeto |
+| Local | `data/HRSID/` ou `data/HRSID_jpg/` na raiz do projeto |
 | Colab | `MyDrive/vision-transfer-learning/dataset/HRSID/` |
 
 A estrutura interna é descoberta sozinha: tanto faz se a pasta contém `HRSID_JPG/annotations/` e `HRSID_JPG/JPEGImages/` ou já é a pasta das anotações.
@@ -98,8 +98,6 @@ A estrutura interna é descoberta sozinha: tanto faz se a pasta contém `HRSID_J
 ### Execução
 
 No Colab, abra o notebook, execute as células em ordem e autorize a montagem do Drive; o runtime já traz PyTorch e TorchVision, e só o que falta é instalado. Localmente, use o mesmo ambiente do DeepPCB (`uv sync --extra cpu` ou `uv run python scripts/setup_gpu.py`) — não há dependência nova. O dispositivo é escolhido entre CUDA, MPS e CPU.
-
-Antes de treinar, `CONFIG['smoke_test']` roda uma verificação curta de ponta a ponta: caminhos, dataset, leitura COCO, tensores, DataLoader, modelo, perda, inferência e checkpoint.
 
 ### Estratégias
 

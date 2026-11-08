@@ -16,7 +16,7 @@ Semente de Python, NumPy e PyTorch (CPU e CUDA). Controla a inicialização das 
 
 ### `dataset_dir` = `''`
 
-Pasta do HRSID já extraído. Aceita qualquer caminho: pasta local, disco externo ou Google Drive montado ou sincronizado. Vazio, vale o padrão do ambiente — `data/HRSID/` na raiz do projeto quando a execução é local, ou `MyDrive/vision-transfer-learning/dataset/HRSID/` no Colab.
+Pasta do HRSID já extraído. Aceita qualquer caminho: pasta local, disco externo ou Google Drive montado ou sincronizado. Caminhos relativos partem da raiz do projeto. Vazio, vale o padrão do ambiente — `data/HRSID/` (ou `data/HRSID_jpg/`) na raiz do projeto quando a execução é local, ou `MyDrive/vision-transfer-learning/dataset/HRSID/` no Colab.
 
 A estrutura interna é descoberta na seção 4: a pasta pode conter `HRSID_JPG/annotations/` e `HRSID_JPG/JPEGImages/` ou já ser a pasta das anotações. O notebook não baixa, não descompacta e não copia o dataset; se o caminho não existir, a seção 3 para com uma mensagem explicando o que configurar.
 
@@ -134,10 +134,6 @@ O checkpoint guardado é o de maior **mAP@0.50:0.95 de máscara** na validação
 
 ## 7. Controle da execução
 
-### `smoke_test` = `True`
-
-Roda as checagens rápidas da seção 13 antes de treinar: caminhos, dataset, leitura COCO, formas dos tensores, conversão das caixas, DataLoader, criação do modelo, número de classes das cabeças, perda em um batch, saída de inferência, checkpoint salvo e recarregado e isolamento da pasta de resultados. O relatório vai para `reports/smoke_test.csv`. Roda em CPU e leva poucos minutos; desligue em rodadas seguintes no mesmo ambiente.
-
 ### `run_training` = `False`
 
 Com `True`, a célula de execução cria uma rodada e treina. Vem desligado para que o notebook possa ser lido e validado sem iniciar um treino longo.
@@ -148,7 +144,7 @@ Com `True`, avalia um checkpoint no teste oficial e salva `metrics_test.json`. U
 
 ### `checkpoint_path` = `None`
 
-Checkpoint que `evaluate_test` e a seção 18 usam quando não há treino na mesma execução. Caminhos relativos partem da raiz do projeto. Carregue apenas checkpoints de origem confiável: o arquivo é aberto com `weights_only=False`.
+Checkpoint que `evaluate_test` e a seção 17 usam quando não há treino na mesma execução. Caminhos relativos partem da raiz do projeto. Carregue apenas checkpoints de origem confiável: o arquivo é aberto com `weights_only=False`.
 
 ---
 
@@ -183,4 +179,4 @@ Cada rodada cria `runs/results/hrsid_mask_rcnn_v2/<experimento>/<data_hora>/`:
 | `figures/curve_<métrica>.png`, `training_curves.png` | uma curva por métrica e o painel |
 | `predictions/prediction_<imagem>.png` | comparação entre anotação e predição |
 
-Fora das rodadas, a pasta `runs/results/hrsid_mask_rcnn_v2/` guarda o que descreve o dataset: `reports/integrity_*.csv`, `reports/smoke_test.csv`, `reports/split.csv`, `reports/comparison.csv`, as figuras da análise exploratória e `figures/comparison.png`.
+Fora das rodadas, a pasta `runs/results/hrsid_mask_rcnn_v2/` guarda o que descreve o dataset: `reports/integrity_*.csv`, `reports/split.csv` e as figuras da análise exploratória.
