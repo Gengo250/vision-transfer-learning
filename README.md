@@ -2,8 +2,10 @@
 
 Projeto acadêmico com dois experimentos independentes de detecção e segmentação usando PyTorch e TorchVision:
 
-- **DeepPCB:** detecção de seis tipos de defeitos em placas de circuito com Faster R-CNN ResNet-50 FPN V2.
-- **HRSID:** detecção e segmentação de instâncias de navios em imagens SAR com Mask R-CNN ResNet-50 FPN V2.
+- **DeepPCB:** detecção de seis tipos de defeitos em placas de circuito com Faster R-CNN ResNet-50 FPN V2. Pergunta: *quanto o pré-treino no COCO ajuda?* Compara treino do zero (A), backbone congelado (B) e fine-tuning completo (C).
+- **HRSID:** detecção e segmentação de instâncias de navios em imagens SAR com Mask R-CNN ResNet-50 FPN V2. Pergunta: *até que profundidade a rede pré-treinada precisa ser readaptada a um domínio de radar?* Compara backbone congelado, fine-tuning parcial (fronteira configurável) e fine-tuning completo, todos partindo do COCO.
+
+Os dois estudos se complementam: o DeepPCB isola o valor do pré-treino em si, e o HRSID isola quanto da rede precisa mudar. O desenho de cada um (variáveis, hipóteses, comparações e limites) está na [documentação técnica](docs/README.md).
 
 Os notebooks usam Python, JupyterLab, TorchMetrics, pycocotools, NumPy, pandas e Matplotlib.
 

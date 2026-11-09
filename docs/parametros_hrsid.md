@@ -50,6 +50,105 @@ As três estratégias estão implementadas e são selecionadas uma por rodada; s
 
 A estratégia parcial usa `trainable_layers=2` por padrão, liberando `layer3` e `layer4`; o construtor oficial recebe 0, o valor configurado ou 5, respectivamente. Os blocos congelados ficam em `eval()` durante o treino para impedir a atualização das estatísticas de BatchNorm. Manter os demais parâmetros e divisão iguais ajuda a comparar as estratégias, mas não há resultado de desempenho afirmado aqui.
 
+## Desenho experimental
+
+### Pergunta e variáveis
+
+A pergunta é **até que profundidade o Mask R-CNN treinado no COCO precisa ser readaptado para detectar e segmentar navios em SAR**. Diferente do DeepPCB, aqui não há rodada sem pré-treino: todas as estratégias partem dos mesmos pesos COCO e mudam apenas a **fronteira entre o que fica congelado e o que treina**. O estudo, portanto, não mede "transferência × treino do zero". Ele mede **quanto da rede precisa ser adaptado** ao novo domínio.
+
+- **Variável independente:** `experiment` e, dentro de `partial_finetune`, `trainable_layers`.
+- **Variáveis controladas:** pesos iniciais, divisão por cena, semente, AdamW com a mesma taxa e o mesmo `weight_decay`, `CosineAnnealingLR`, `epochs`, `patience`, `batch_size`, espelhamento horizontal e limiares de avaliação.
+- **Variáveis de resposta:** mAP de caixa e de máscara (`@0.50` e `@0.50:0.95`), precisão, recall e F1 de caixa e de máscara, contagens TP/FP/FN e matriz de confusão, componentes da perda de treino, época do melhor checkpoint e número de parâmetros treináveis (`reports/parameters.csv`).
+
+### Por que o domínio importa
+
+Imagens SAR não são fotografias. O sensor mede o retroespalhamento do sinal de radar emitido pelo próprio satélite, e não a luz refletida. Isso traz diferenças que afetam cada nível da rede:
+
+- **Um canal só.** A imagem é monocromática e é replicada em três canais RGB iguais para caber na entrada do modelo. Os filtros do COCO que respondem a contrastes de cor recebem a mesma informação nos três canais.
+- **Ruído *speckle*.** É um ruído granular e multiplicativo, próprio da formação coerente da imagem. As texturas finas que as primeiras camadas detectam são, em boa parte, esse ruído, e não detalhe do objeto.
+- **Estatística diferente.** Mar escuro e homogêneo, navios como alvos pequenos e muito brilhantes, e costa com estruturas brilhantes que se parecem com navios. A média e a variância das ativações em cada camada diferem das do COCO. Isso afeta diretamente o BatchNorm congelado.
+- **Escala e ponto de vista.** Vista de cima, sem perspectiva, com a maioria dos alvos ocupando poucos pixels. No COCO, objetos pequenos são minoria e quase tudo é visto de lado.
+
+A hipótese de trabalho, que cada estratégia testa em um grau diferente, é a habitual em transfer learning: **camadas rasas transferem melhor que camadas profundas**. Bordas e manchas brilhantes são úteis em qualquer imagem, enquanto as combinações de alto nível do COCO (rodas, rostos, pernas) dificilmente servem para navios em radar.
+
+### Estratégia `frozen_backbone`
+
+**O que é.** `trainable_backbone_layers=0` congela os cinco estágios do ResNet-50, e o notebook congela também a FPN. Ambos ficam em `eval()`, preservando as estatísticas de BatchNorm do COCO. Treinam a RPN, `box_head`, `mask_head` (todas partindo do COCO) e os dois preditores novos de duas classes.
+
+**O que mede.** Se a **pirâmide de características do COCO, intacta**, já contém informação suficiente para localizar navios e delinear sua forma. É o teste mais direto da hipótese de que a representação transfere sem ajuste.
+
+**Mecanismo e expectativas teóricas.** Como a FPN também está congelada, todas as escalas da pirâmide, inclusive os níveis de alta resolução usados para alvos pequenos, ficam como foram aprendidas no COCO. Se as ativações para um navio pequeno sobre o mar não se destacam nesses níveis, a RPN não tem como propor a região, e o erro aparece como **FN**. A cabeça de máscara depende do mesmo mapa recortado pelo RoI Align. Se a característica é pobre em bordas precisas, a máscara pode ficar pior que a caixa, o que aparece como diferença entre a mAP de máscara e a de caixa. A vantagem é que há poucos parâmetros treináveis, então o risco de sobreajuste é o menor das três.
+
+**Sinais para observar.** Convergência rápida seguida de platô; recall baixo, com FN dominando a matriz de confusão, principalmente em navios pequenos; `loss_objectness` e `loss_rpn_box_reg` que param de cair cedo, indicando que a RPN não consegue separar navio de mar com o mapa fixo.
+
+**Custo.** É o menor: não há gradiente no backbone nem na FPN.
+
+### Estratégia `partial_finetune`
+
+**O que é.** Os blocos finais do ResNet-50 (`trainable_layers`, padrão `2`: `layer3` e `layer4`), a FPN inteira, a RPN e as cabeças treinam. Os blocos iniciais (`conv1`, `bn1`, `layer1`, `layer2` no padrão) ficam congelados e em `eval()`.
+
+**O que mede.** Se basta **reaproveitar as características de baixo nível do COCO e readaptar as de alto nível** ao SAR. É o meio-termo entre estabilidade e adaptação, e testa diretamente a hipótese de que camadas rasas transferem melhor.
+
+**Mecanismo e expectativas teóricas.** As camadas rasas, que detectam bordas e manchas, continuam como no COCO e recebem estatísticas de BatchNorm do COCO. As camadas profundas e a FPN podem aprender a combinar essas bordas em "alvo brilhante compacto sobre fundo escuro". A FPN treinável é importante: ela pode reponderar os níveis da pirâmide para os alvos pequenos do HRSID. Comparado ao fine-tuning completo, há menos parâmetros livres e os primeiros filtros não são perturbados por gradientes ruidosos no início do treino.
+
+**`trainable_layers` como sub-experimento.** O valor define a fronteira de congelamento e pode ser varrido de `1` a `4`:
+
+| `trainable_layers` | Blocos do ResNet-50 que treinam | Blocos congelados |
+| --- | --- | --- |
+| `1` | `layer4` | `conv1`, `bn1`, `layer1`–`layer3` |
+| `2` (padrão) | `layer3`, `layer4` | `conv1`, `bn1`, `layer1`, `layer2` |
+| `3` | `layer2`–`layer4` | `conv1`, `bn1`, `layer1` |
+| `4` | `layer1`–`layer4` | `conv1`, `bn1` |
+
+Varrer esses valores, com tudo o mais fixo, mostra **em que profundidade a transferência deixa de ajudar**: o ponto em que liberar mais um bloco já não melhora a validação ou começa a sobreajustar. Junto com `frozen_backbone` (equivalente a `0`, mas com a FPN também congelada) e `full_finetune` (`5`), forma uma curva completa da profundidade de adaptação.
+
+**Sinais para observar.** Compare com `frozen_backbone` em recall e FN, para ver se adaptar o topo da rede recupera alvos perdidos. Compare com `full_finetune` na distância entre perda de treino e mAP de validação, para ver se congelar a base reduz o sobreajuste.
+
+**Custo.** É intermediário e cresce com `trainable_layers`.
+
+### Estratégia `full_finetune`
+
+**O que é.** `trainable_backbone_layers=5`. Todos os parâmetros treinam, e nenhum módulo é forçado a `eval()`: todo BatchNorm passa a acumular estatísticas das imagens SAR.
+
+**O que mede.** Se a adaptação **também das primeiras camadas** compensa. Por exemplo, filtros iniciais que aprendam a lidar com o *speckle* em vez de responder a ele como textura.
+
+**Mecanismo e expectativas teóricas.** É a estratégia com maior capacidade de adaptação ao domínio e, por isso, com maior risco de sobreajuste e de esquecer o que o COCO ensinou. Dois detalhes do notebook pesam aqui:
+
+- **BatchNorm com batch pequeno.** O V2 usa `BatchNorm2d` comum. Com `batch_size=2`, as médias e variâncias de cada passo do backbone são estimadas com duas imagens, e as médias móveis podem ficar ruidosas. Esse efeito não existe nas camadas congeladas das outras estratégias. Ele é uma diferença real entre os tratamentos, e não só "mais parâmetros".
+- **Mesma taxa para todas as camadas.** O AdamW aplica `learning_rate` igualmente a backbone e cabeças. Em fine-tuning completo, é comum usar taxas menores nas camadas rasas (*discriminative learning rates*), o que o notebook não faz.
+
+**Sinais para observar.** Perda de treino bem abaixo das outras estratégias, com mAP de validação estagnada ou caindo (sobreajuste); oscilações na validação de uma época para outra (BatchNorm ruidoso ou taxa alta); melhor checkpoint em época precoce.
+
+**Custo.** É o maior: gradientes e estados do otimizador para todos os parâmetros. Com AdamW, os estados são dois tensores por parâmetro.
+
+### O que cada comparação isola
+
+| Comparação | O que muda | O que a comparação responde |
+| --- | --- | --- |
+| `partial_finetune` × `frozen_backbone` | Libera FPN e blocos finais do ResNet-50 | O ganho de adaptar as características de alto nível ao SAR |
+| `full_finetune` × `partial_finetune` | Libera os blocos iniciais e seus BatchNorm | Se as características de baixo nível do COCO também precisam mudar |
+| `partial_finetune` com `trainable_layers` de 1 a 4 | Uma camada por vez | A profundidade ideal da fronteira de congelamento |
+| Mask mAP − Box mAP, em cada estratégia | Mesmo modelo, outra métrica | O custo de segmentar além de localizar, e se ele muda com a adaptação |
+
+A diferença entre a mAP de máscara e a de caixa merece leitura própria. Ela separa dois tipos de erro: **achar o navio** (RPN e cabeça de caixa) e **delinear o navio** (cabeça de máscara sobre o RoI Align). Uma estratégia pode melhorar uma coisa sem melhorar a outra.
+
+### Ameaças à validade
+
+- **Hiperparâmetros compartilhados.** Taxa de aprendizado, `weight_decay` e número de épocas são os mesmos para as três estratégias, embora o valor ideal de cada um dependa de quantos parâmetros treinam. A comparação vale **sob esta configuração comum**. Ajustar a taxa por estratégia, sempre pela validação, é uma extensão possível.
+- **Orçamento de épocas e early stopping.** `frozen_backbone` tende a convergir antes e pode parecer melhor com poucas épocas. Registre a época do melhor checkpoint: se ela coincidir com a última, a rodada não terminou de aprender.
+- **Uma semente.** Diferenças pequenas entre estratégias podem estar dentro do ruído entre sementes. Repita cada estratégia com algumas sementes e relate média e dispersão.
+- **Não há linha de base sem pré-treino.** Sem uma rodada partindo de pesos aleatórios, o estudo não quantifica o ganho do COCO em si, apenas o de adaptar mais ou menos camadas. Para isso, seria preciso acrescentar uma estratégia com `weights=None`, como a A do DeepPCB.
+- **Divisão e vazamento.** A seleção usa a validação separada por cena. O teste oficial compartilha cenas com o treino e deve ser avaliado uma única vez, no final (veja *Divisão e vazamento*).
+- **Mistura de regimes e tamanhos.** Uma única mAP mistura navios em mar aberto (fáceis de separar do fundo) e junto à costa (confundidos com estruturas), e também mistura alvos pequenos e grandes. Uma estratégia pode ganhar em um grupo e perder em outro sem que o número agregado mostre isso.
+
+### Protocolo sugerido
+
+1. Fixe `CONFIG`, exceto `experiment` e `trainable_layers`, e não altere mais nada entre as rodadas.
+2. Rode `frozen_backbone`, `partial_finetune` e `full_finetune` com `run_training=True` e `evaluate_test=False`. Opcionalmente, varra `trainable_layers` em `partial_finetune`.
+3. Compare na validação: `history.csv`, curvas, `mask_map_50_95` e `box_map_50_95` do melhor checkpoint, época em que ele ocorreu, componentes da perda, matriz de confusão e parâmetros treináveis.
+4. Repita com outras sementes antes de tirar conclusões.
+5. Escolha a estratégia pela validação e só então avalie o teste, uma vez, com `evaluate_test=True` e `checkpoint_path`.
+
 ## Configuração e treinamento
 
 Valores atuais em `CONFIG`:
@@ -78,7 +177,9 @@ A validação ocorre a cada época. TorchMetrics com backend pycocotools calcula
 
 O melhor checkpoint é escolhido pelo maior `mask_map_50_95` na validação; `patience` controla a parada antecipada. O teste oficial é opcional (`evaluate_test=True`) e deve ficar reservado até a escolha da estratégia. Sem treino na mesma execução, forneça `checkpoint_path`, relativo à raiz do projeto ou absoluto. Carregue apenas checkpoints confiáveis, pois `torch.load` usa `weights_only=False`. O checkpoint salva estados de otimizador, scheduler e scaler, mas não há rotina de retomada de treino.
 
-No destino padrão `runs/results/hrsid_mask_rcnn_v2/` do ambiente ativo, `reports/` e `figures/` na raiz contêm a análise do dataset. Cada rodada em `<experimento>/<data_hora>/` guarda `config.json`, divisão, contagem de parâmetros, histórico, métricas de validação e, quando solicitadas, de teste em `reports/`; `checkpoints/best.pt`; curvas individuais e painel em `figures/`; e visualizações em `predictions/`. As figuras de predição comparam imagem, anotação e saída, priorizando imagens de validação com mais navios. A localização depende de como o checkpoint é informado: ao apenas configurar `checkpoint_path` sem treino nem teste, usa-se o diretório geral de predições; quando há treino ou avaliação de teste, o caminho é derivado do checkpoint.
+No destino padrão `runs/results/hrsid_mask_rcnn_v2/` do ambiente ativo, `reports/` e `figures/` na raiz contêm a análise do dataset. Cada rodada em `<experimento>/<data_hora>/` guarda `config.json`, divisão, contagem de parâmetros, histórico, métricas de validação e, quando solicitadas, de teste em `reports/`; `checkpoints/best.pt`; curvas individuais e painel em `figures/`; e visualizações em `predictions/`. As figuras de predição comparam imagem, anotação e saída, priorizando imagens de validação com mais navios.
+
+A matriz de confusão, mostrada após as predições, é 2 × 2 (navio × fundo) para caixas e para máscaras. Ela é montada a partir das contagens TP, FP e FN já salvas: de `reports/metrics_test.json`, se o teste foi avaliado, ou das métricas de validação da melhor época guardadas no checkpoint. Por isso, aparece sem treinar nem reavaliar o modelo. O canto fundo × fundo (verdadeiro negativo) não é definido em detecção, porque não existe um conjunto finito de "regiões sem navio" para contar, e fica em branco. A figura é salva como `figures/confusion_<split>.png` na pasta da rodada. A localização depende de como o checkpoint é informado: ao apenas configurar `checkpoint_path` sem treino nem teste, usa-se o diretório geral de predições; quando há treino ou avaliação de teste, o caminho é derivado do checkpoint.
 
 Sementes facilitam a repetição, sem garantir determinismo em toda GPU. Avaliação por tamanho e por regime costeiro/oceânico e repetição com outras sementes são análises futuras; o notebook atual não registra mAP por tamanho ou regime. Os artefatos de cada execução são a fonte para resultados observados, e nenhum desempenho é presumido aqui.
 

@@ -24,13 +24,90 @@ O modelo é o [`fasterrcnn_resnet50_fpn_v2`](https://docs.pytorch.org/vision/sta
 
 `FasterRCNN_ResNet50_FPN_V2_Weights.DEFAULT` corresponde a pesos COCO; a cabeça `FastRCNNPredictor` é substituída por uma com sete classes, incluindo fundo. O notebook implementa uma estratégia por rodada:
 
-| `experiment` | Inicialização | Parâmetros treinados |
-| --- | --- | --- |
-| `A` | Aleatória, sem COCO nem ImageNet | Todo o detector |
-| `B` | COCO, com preditor novo | RPN e cabeças; ResNet-50 e FPN congelados |
-| `C` | COCO, com preditor novo | Todo o detector |
+| `experiment` | Inicialização | Parâmetros treinados | BatchNorm do backbone no treino |
+| --- | --- | --- | --- |
+| `A` | Aleatória, sem COCO nem ImageNet | Todo o detector | Atualiza estatísticas |
+| `B` | COCO, com preditor novo | RPN e cabeças; ResNet-50 e FPN congelados | Fixo em `eval()` com estatísticas COCO |
+| `C` | COCO, com preditor novo | Todo o detector | Atualiza estatísticas |
 
-Em B, o backbone também permanece em `eval()` durante o treino para não atualizar estatísticas de normalização. A mede a referência sem transferência; B mede o aproveitamento de características fixas; C permite adaptá-las ao domínio. Nenhuma estratégia tem superioridade comprovada aqui. Para comparação controlada, mantenha os demais parâmetros, dados e divisão iguais; repetir sementes permite estimar variação.
+## Desenho experimental
+
+### Pergunta e variáveis
+
+A pergunta do estudo é **quanto o conhecimento aprendido em fotografias naturais (COCO) ajuda a detectar defeitos em placas de circuito**, e em que parte da rede esse conhecimento precisa ser ajustado. Para isso, uma única variável muda entre as rodadas: a estratégia em `CONFIG['experiment']`. Ela define a inicialização dos pesos e quais parâmetros recebem gradiente.
+
+- **Variável independente:** a estratégia A, B ou C.
+- **Variáveis controladas:** arquitetura, divisão por grupos, semente, otimizador SGD e sua taxa de aprendizado, StepLR, número máximo de épocas, `patience`, `batch_size`, resolução de entrada e limiares de avaliação. Elas só podem ser comparadas se forem iguais nas três rodadas.
+- **Variáveis de resposta:** `map_50_95` e `map_50` de validação, precisão, recall e F1 no ponto de operação de `CONFIG`, matriz de confusão, perda de treino por época e época do melhor checkpoint.
+
+### Por que o domínio importa
+
+O COCO contém fotografias coloridas de objetos do cotidiano, com fundos variados e objetos ocupando boa parte da imagem. O DeepPCB é quase o oposto: imagens em tons de cinza, de alto contraste, com padrões geométricos repetitivos (trilhas, pads e furos) e defeitos que ocupam poucos pixels. Além disso, um defeito costuma ser **uma pequena alteração de um padrão regular**, e não um objeto com forma própria. Um `spur` ou um `mousebite` é uma irregularidade na borda de uma trilha.
+
+Isso cria uma tensão que as três estratégias exploram:
+
+- As primeiras camadas de uma CNN aprendem filtros de borda, cantos e texturas simples, que costumam ser úteis em qualquer domínio. Esse é o argumento a favor da transferência.
+- As camadas profundas do ResNet-50 e a FPN foram ajustadas para combinar essas bordas em partes de pessoas, carros e animais. Essas combinações podem não representar bem "trilha com um pedaço faltando". Esse é o argumento a favor de adaptar o backbone.
+
+### Estratégia A: treino do zero
+
+**O que é.** O detector inteiro, incluindo ResNet-50, FPN, RPN e cabeças, começa com pesos aleatórios. `weights=None` e `weights_backbone=None` impedem que o TorchVision carregue COCO ou ImageNet. Todos os parâmetros treinam e o BatchNorm aprende estatísticas apenas das imagens de PCB.
+
+**O que mede.** É a **linha de base sem transferência**. Sem A, não há como afirmar que B ou C "ganharam" com o pré-treino: qualquer número de B ou C só vira evidência de transferência quando comparado a A sob o mesmo orçamento.
+
+**Mecanismo e expectativas teóricas.** Um ResNet-50 com FPN tem dezenas de milhões de parâmetros, e o conjunto de treino tem algumas centenas de imagens. Redes profundas treinadas do zero com poucos dados tendem a convergir devagar e a depender mais de regularização e de muitas épocas. Por outro lado, o domínio é visualmente simples e repetitivo, o que pode reduzir essa desvantagem. Em [*Rethinking ImageNet Pre-training*](https://arxiv.org/abs/1811.08883), He et al. mostram que detectores treinados do zero podem alcançar os pré-treinados no próprio COCO, mas com muito mais iterações. Os mesmos autores observam que, com poucos dados, a desvantagem do treino do zero aumenta. Aqui, além disso, o orçamento é de no máximo `epochs=20`, com a mesma taxa de aprendizado das outras estratégias. Portanto, A responde "quanto se consegue **neste orçamento**", e não "qual o teto do treino do zero".
+
+**Sinais para observar nas curvas.** Perda de treino que cai lentamente nas primeiras épocas; mAP de validação próxima de zero no início; instabilidade ou perda não finita, caso a taxa de aprendizado seja alta para pesos aleatórios. Se o early stopping disparar muito cedo, a rodada pode estar subestimando A.
+
+**Custo.** É igual ao de C por passo, porque todos os gradientes são calculados.
+
+### Estratégia B: extrator de características congelado
+
+**O que é.** O modelo parte dos pesos COCO. ResNet-50 e FPN ficam com `requires_grad=False` e em `eval()` durante o treino. Assim, nem os pesos nem as médias e variâncias do BatchNorm mudam. Só a RPN e as cabeças RoI (`box_head` e o preditor novo de sete classes) aprendem.
+
+**O que mede.** Se as **características do COCO, como estão**, já separam os defeitos do fundo e entre si. A RPN e as cabeças precisam aprender a usar um mapa de características fixo.
+
+**Mecanismo e expectativas teóricas.** Congelar reduz muito o número de parâmetros treináveis, o que diminui o risco de sobreajuste com poucos dados e acelera cada passo, porque não há retropropagação no backbone. O limite é a representação: se a FPN não produz ativações distintas para um `spur` e uma trilha normal, as cabeças não têm como recuperar essa informação. B tende a ir bem quando o domínio de origem e o de destino compartilham padrões visuais, e a ficar limitado quando o domínio é muito diferente. Manter o BatchNorm em `eval()` é essencial: com ele em modo de treino, as estatísticas mudariam para as de PCB mesmo sem gradiente, e o "congelamento" deixaria de ser real.
+
+**Sinais para observar nas curvas.** Convergência rápida seguida de um platô, porque a capacidade de adaptação é pequena. Uma diferença grande entre `map_50` e `map_50_95` indica que o modelo encontra o defeito, mas localiza a caixa com pouca precisão. A matriz de confusão mostra se as classes parecidas (`spur` × `mousebite`, `open` × `short`) se confundem quando o backbone não é ajustado.
+
+**Custo.** É o menor das três: menos memória para gradientes e passos mais curtos.
+
+### Estratégia C: fine-tuning completo
+
+**O que é.** O modelo parte dos pesos COCO e todos os parâmetros treinam, incluindo o BatchNorm, que passa a acumular estatísticas das imagens de PCB.
+
+**O que mede.** Se partir do COCO e **adaptar a rede inteira** ao domínio supera tanto não ter pré-treino (A) quanto não adaptar o backbone (B).
+
+**Mecanismo e expectativas teóricas.** C combina uma boa inicialização com liberdade total de adaptação. Os riscos são dois. O primeiro é sobreajustar o conjunto pequeno de treino, porque há tantos parâmetros livres quanto em A. O segundo é apagar rapidamente características úteis do COCO se a taxa de aprendizado for alta (*catastrophic forgetting*). Há ainda um detalhe do V2: ele usa `BatchNorm2d` comum, e com `batch_size=2` as estatísticas de cada passo são estimadas com apenas duas imagens. Isso pode deixar as médias móveis ruidosas, algo que não acontece em B.
+
+**Sinais para observar nas curvas.** Perda de treino caindo bem abaixo da de B, enquanto a mAP de validação para de subir ou cai, indica sobreajuste. Nesse caso, `patience` e a escolha do melhor checkpoint protegem a rodada.
+
+**Custo.** É o maior junto com A.
+
+### O que cada comparação isola
+
+| Comparação | Diferença entre as rodadas | O que a comparação responde |
+| --- | --- | --- |
+| C × A | Só a inicialização (COCO × aleatória); ambas treinam tudo | O valor do pré-treino em si |
+| C × B | Só o que treina (tudo × apenas RPN e cabeças); ambas partem do COCO | O valor de adaptar o backbone ao domínio |
+| B × A | Inicialização e parâmetros treinados mudam juntos | Se características COCO congeladas superam aprender tudo do zero; não separa os dois efeitos |
+
+### Ameaças à validade
+
+- **Hiperparâmetros compartilhados.** A mesma taxa de aprendizado e o mesmo agendamento servem às três estratégias, mas o melhor valor para cada uma tende a ser diferente: treino do zero e fine-tuning costumam preferir taxas distintas. A comparação mede as estratégias **sob uma configuração comum**, e não cada uma no seu ótimo. Ajustar a taxa por estratégia, usando apenas a validação, é uma extensão possível.
+- **Orçamento de épocas.** Um mesmo máximo de épocas favorece estratégias que convergem rápido. Registre a época do melhor checkpoint: se ela coincidir com a última, a rodada ainda estava melhorando.
+- **Uma semente.** Diferenças pequenas entre estratégias podem estar dentro da variação entre sementes. Repetir cada estratégia com algumas sementes e relatar média e dispersão torna a conclusão defensável.
+- **Mesma divisão para tudo.** A escolha da estratégia deve usar apenas a validação. O teste oficial é avaliado uma vez, no final, e compartilha grupos com o desenvolvimento (veja a seção de divisão).
+- **Template ignorado.** Na inspeção industrial, o template sem defeitos é uma informação muito forte, e métodos baseados em diferença entre imagens a exploram. Este estudo usa só a imagem inspecionada para medir a transferência de um detector genérico. Por isso, os números não representam o que se alcança com o par imagem-template.
+
+### Protocolo sugerido
+
+1. Fixe `CONFIG` (exceto `experiment`) e não altere mais nada entre as rodadas.
+2. Rode A, B e C com `run_training=True` e `evaluate_test=False`; cada rodada cria sua pasta em `runs/results/`.
+3. Compare as rodadas na validação: `history.csv`, curvas, `map_50_95` do melhor checkpoint, época em que ele ocorreu e matriz de confusão.
+4. Se possível, repita com outras sementes antes de tirar conclusões.
+5. Escolha a estratégia final pela validação e só então avalie o teste, uma única vez, com `evaluate_test=True` e `checkpoint_path`.
 
 ## Configuração e treinamento
 
