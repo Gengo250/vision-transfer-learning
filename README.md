@@ -36,6 +36,10 @@ Para GPU local, use `uv run python scripts/setup_gpu.py` e abra o Jupyter com o 
 
 Abra [DeepPCB](notebooks/deep_pcb_transfer_learning.ipynb) ou [HRSID](notebooks/hrsid_mask_rcnn_transfer_learning.ipynb), revise `CONFIG` e execute as células em ordem. **Os dois notebooks estão atualmente configurados com `run_training=True`**: altere para `False` antes de executar se não quiser iniciar treinamento. `evaluate_test` controla a avaliação no teste oficial.
 
+## Dataset + modelos 
+
+https://drive.google.com/drive/folders/1mdTe8Ez5r7KCi5ryaBf_onUCZJHOlPqH?usp=drive_link
+
 No Colab, abra o notebook correspondente e autorize a montagem do Drive. Os notebooks leem os dados existentes e instalam somente dependências ausentes; não executam `uv sync` no runtime.
 
 ## Dados e resultados
